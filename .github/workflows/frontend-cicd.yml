@@ -1,0 +1,59 @@
+name: Frontend CI/CD Pipeline
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout Code
+      uses: actions/checkout@v4
+
+    - name: Login to Docker Hub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKERHUB_USERNAME }}
+        password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+    - name: Build and Push Frontend Image
+      run: |
+        docker build -t ${{ secrets.DOCKERHUB_USERNAME }}/sahyadriops-frontend:latest -t ${{ secrets.DOCKERHUB_USERNAME }}/sahyadriops-frontend:${{ github.sha }} .
+        docker push ${{ secrets.DOCKERHUB_USERNAME }}/sahyadriops-frontend:latest
+        docker push ${{ secrets.DOCKERHUB_USERNAME }}/sahyadriops-frontend:${{ github.sha }}
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    
+    steps:
+    - name: Deploy to EC2 via SSH
+      uses: appleboy/ssh-action@v1.0.3
+      with:
+        host: ${{ secrets.EC2_HOST }}
+        username: ${{ secrets.EC2_USERNAME }}
+        key: ${{ secrets.EC2_SSH_KEY }}
+        script: |
+          # Install Docker if not present
+          if ! command -v docker &> /dev/null; then
+            sudo apt-get update
+            sudo apt-get install -y docker.io
+            sudo systemctl start docker
+            sudo systemctl enable docker
+          fi
+          
+          # Login to Docker Hub
+          echo "${{ secrets.DOCKERHUB_TOKEN }}" | sudo docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
+          
+          # Stop and remove existing container
+          sudo docker stop sahyadriops-frontend || true
+          sudo docker rm sahyadriops-frontend || true
+          
+          # Pull latest image and run
+          sudo docker pull ${{ secrets.DOCKERHUB_USERNAME }}/sahyadriops-frontend:latest
+          sudo docker run -d --name sahyadriops-frontend -p 80:80 ${{ secrets.DOCKERHUB_USERNAME }}/sahyadriops-frontend:latest
+          sudo docker image prune -f
